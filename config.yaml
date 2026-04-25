@@ -1,0 +1,29 @@
+id: config1
+start_date: "2020-01-01"
+end_date: "2026-04-03"
+
+benchmark: "^NSEI"
+update: false
+
+screen:
+  condition1:
+    and:
+      - ["sharpe_60d", ">", 1]
+      - ["ann_ret", ">", 0.12]
+    or:
+      - ["sharpe_60d", "<=", "sharpe_21d"]
+
+  condition2:
+    and:
+      - ["drawdown", ">", -0.2]
+
+cash: 1000000
+rebalance_frequency: "monthly"
+
+ranker:
+  ann_ret:
+       0.5
+  sharpe_60d:
+      0.5
+  volatility:
+    -0.5
