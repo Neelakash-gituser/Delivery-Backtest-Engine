@@ -31,7 +31,7 @@ ranker:
 
 # ADD these two blocks to your existing config.yaml
 slippage:
-  mode: "fixed"        # options: none | fixed | volume
+  mode: "volume"        # options: none | fixed | volume
   bps: 10              # used when mode=fixed (10 bps = 0.10%)
   impact_k: 0.1        # used when mode=volume (market impact constant)
 

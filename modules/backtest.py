@@ -5,6 +5,8 @@ from modules.portfolio import allocate_portfolio
 from modules.trade import execute_trades
 from modules.utils import generate_rebalance_dates, default_rank, ensure_date_column
 from modules.trade import indian_cost_model
+from modules.slippage import SlippageModel                          
+
 
 def run_backtest(
     price_df: pd.DataFrame,
@@ -18,32 +20,41 @@ def run_backtest(
     ranker=None,
     cost_model=indian_cost_model,
     ranker_dict=None,
-    verbose: bool = True   # 👈 ADD THIS
+    verbose: bool = True,
+    config: dict = None,                                         
 ):
 
     start_date = pd.to_datetime(start_date)
-    end_date = pd.to_datetime(end_date)
+    end_date   = pd.to_datetime(end_date)
 
-    price_df = ensure_date_column(price_df)
+    price_df   = ensure_date_column(price_df)
     feature_df = ensure_date_column(feature_df)
 
-    price_df = price_df[(price_df["Date"] >= start_date) & (price_df["Date"] <= end_date)]
+    price_df   = price_df[  (price_df["Date"]   >= start_date) & (price_df["Date"]   <= end_date)]
     feature_df = feature_df[(feature_df["Date"] >= start_date) & (feature_df["Date"] <= end_date)]
 
-    cash = initial_cash
-    portfolio = {}
-    trade_blotter = []
-    equity_curve = []
+    cash              = initial_cash
+    portfolio         = {}
+    trade_blotter     = []
+    equity_curve      = []
     portfolio_history = []
 
-    all_dates = sorted(price_df["Date"].unique())
-    rebalance_dates = generate_rebalance_dates(all_dates, rebalance_freq)
+    all_dates        = sorted(price_df["Date"].unique())
+    rebalance_dates  = generate_rebalance_dates(all_dates, rebalance_freq)
+
+    # ── Instantiate slippage model ONCE before the loop ──────────────────    
+    slippage_model = SlippageModel(config) if config else None                 # SlippageModel instance — pass None to disable
+    exec_mode      = config["execution"]["price"] if config else "close"       # "close" | "open_next" | "random_open"
+    noise_sigma    = (                                                         # gaussian noise std — only used when exec_mode="random_open"
+        config["execution"].get("open_noise_sigma", 0.003)                     # default 0.003 (0.3%) noise if not specified in config
+        if config else 0.003                                                   # fallback to 0.003 if no config provided
+    )                                                                           
 
     # =============================
     # MAIN LOOP
     # =============================
     for i, date in enumerate(all_dates):
-
+        # Progress logging
         if verbose and i % 10 == 0:
             print(f"\n📅 Progress: {i}/{len(all_dates)} | Date: {date.date()}")
 
@@ -54,7 +65,7 @@ def run_backtest(
         port_value = cash
         for tic, qty in portfolio.items():
             if tic in prices_today.index:
-                port_value += (qty * prices_today.loc[tic, "Adj Close"])
+                port_value += qty * prices_today.loc[tic, "Adj Close"]
 
         # -----------------------------
         # 2. REBALANCE
@@ -67,7 +78,8 @@ def run_backtest(
                 print(f"   🧾 Cash: {cash:,.2f}")
 
             features_today = feature_df[feature_df["Date"] == date]
-            screened = eval_rule(features_today, screen_rule)
+            screened       = eval_rule(features_today, screen_rule)
+
             if verbose:
                 print(f"   🎯 Screened stocks: {len(screened)}")
 
@@ -82,6 +94,7 @@ def run_backtest(
                     ranked = default_rank(features_today, candidates, ranker_dict)
                 if verbose:
                     print(f"   📊 Ranked stocks: {len(ranked)}")
+
                 # -----------------------------
                 # ALLOCATION
                 # -----------------------------
@@ -89,44 +102,69 @@ def run_backtest(
                     ranked,
                     prices=price_df,
                     date=date,
-                    method=allocator
+                    method=allocator,
                 )
 
                 if verbose:
                     top_weights = sorted(weights.items(), key=lambda x: -x[1])[:5]
                     print(f"   🧠 Top allocations: {top_weights}")
+
+                # ── Build next-day open prices for execution ──────────────   
+                date_idx = all_dates.index(date)
+                is_last_date = date_idx + 1 >= len(all_dates)
+
+                if is_last_date and exec_mode in ("open_next", "random_open"):
+                    # Can't execute on next-day open if there is no next day —
+                    # skip rebalance entirely rather than use a fictitious price
+                    if verbose:
+                        print(f"   ⚠️  Skipping rebalance on last date {date.date()} — no next-day open available")
+                else:
+                    next_date = all_dates[date_idx + 1] if not is_last_date else date
+                    open_prices_tomorrow = (
+                        price_df[price_df["Date"] == next_date]
+                        .set_index("TIC")["Open"]
+                        .to_dict()
+                    ) if not is_last_date else {}                                                   
+
                 # -----------------------------
                 # EXECUTION
                 # -----------------------------
                 portfolio, cash, trade_blotter = execute_trades(
-                    portfolio,
-                    weights,
-                    prices_today,
-                    cash,
-                    cost_model,
-                    date,
-                    trade_blotter=trade_blotter
-                )
+                                            portfolio,
+                                            weights,
+                                            prices_today,
+                                            cash,
+                                            cost_model,
+                                            date,
+                                            trade_blotter  = trade_blotter,
+                                            slippage_model = slippage_model,
+                                            open_prices    = open_prices_tomorrow,
+                                            exec_mode      = exec_mode,
+                                            noise_sigma    = noise_sigma,
+                                        )
 
-                # Append new portfolio state to history
+                # Store portfolio snapshot after trades for this date
                 portfolio_history.append({
-                    "Date": date,
-                    "Portfolio": portfolio.copy()
+                    "Date":      date,
+                    "Portfolio": portfolio.copy(),
                 })
-
+                
                 if verbose:
                     print(f"   💼 Trades executed | New cash: {cash:,.2f}")
-
         # -----------------------------
         # 3. STORE EQUITY
         # -----------------------------
         equity_curve.append({
-            "Date": date,
+            "Date":   date,
             "equity": port_value,
-            "cash": cash
+            "cash":   cash,
         })
 
     if verbose:
         print("\n✅ Backtest completed")
 
-    return pd.DataFrame(equity_curve), pd.DataFrame(trade_blotter), pd.DataFrame(portfolio_history)
+    return (
+        pd.DataFrame(equity_curve),
+        pd.DataFrame(trade_blotter),
+        pd.DataFrame(portfolio_history),
+    )

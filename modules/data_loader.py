@@ -8,6 +8,7 @@ import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
+
 def download_benchmark_data(symbol="^NSEI") -> pd.DataFrame:
     """
     Download benchmark index data (no caching).
@@ -31,7 +32,6 @@ def download_benchmark_data(symbol="^NSEI") -> pd.DataFrame:
     return data.reset_index()[["Date", "Adj Close"]].rename(columns={"Adj Close": "bench"})
 
 
-
 def load_nse_all() -> pd.DataFrame:
     """
     Load all NSE universe CSVs, combine them, and return a clean deduplicated dataset.
@@ -42,13 +42,12 @@ def load_nse_all() -> pd.DataFrame:
         ignore_index=True
     )
 
-    df.columns = df.columns.str.strip()
-    df["Symbol"] = df["Symbol"].str.strip()
-    df["Industry"] = df["Industry"].str.strip()
-    df["mdExch"] = df["Symbol"] + ".NS"
+    df.columns          = df.columns.str.strip()
+    df["Symbol"]        = df["Symbol"].str.strip()
+    df["Industry"]      = df["Industry"].str.strip()
+    df["mdExch"]        = df["Symbol"] + ".NS"
 
     return df.drop_duplicates("Symbol").fillna({"Industry": "Other"})
-
 
 
 def download_data(df, refresh_data=False, workers=8) -> pd.DataFrame:
@@ -69,16 +68,17 @@ def download_data(df, refresh_data=False, workers=8) -> pd.DataFrame:
     os.makedirs(os.path.dirname(cache), exist_ok=True)
 
     tickers = df["mdExch"].dropna().unique().tolist()
-    REF = "^NSEI"
+    REF     = "^NSEI"
+
     if os.path.exists(cache) and not refresh_data:
         cached = pd.read_parquet(cache)
         cached["Date"] = pd.to_datetime(cached["Date"])
         last = cached.groupby("TIC")["Date"].max()
 
         try:
-            ref = yf.download(REF, period="5d", progress=False)
+            ref      = yf.download(REF, period="5d", progress=False)
             mkt_date = ref.index.max().normalize()
-        except:
+        except Exception:
             mkt_date = None
 
         if mkt_date is not None and cached["Date"].max().normalize() >= mkt_date:
@@ -93,8 +93,13 @@ def download_data(df, refresh_data=False, workers=8) -> pd.DataFrame:
     def fetch(t):
         try:
             start = last[t] + pd.Timedelta(days=1) if t in last else None
-            d = yf.download(t, start=start, period="max" if start is None else None,
-                            progress=False, auto_adjust=False)
+            d = yf.download(
+                t,
+                start=start,
+                period="max" if start is None else None,
+                progress=False,
+                auto_adjust=False,
+            )
             if d.empty:
                 return None
             if isinstance(d.columns, pd.MultiIndex):
@@ -102,13 +107,16 @@ def download_data(df, refresh_data=False, workers=8) -> pd.DataFrame:
             d = d.reset_index()
             d["TIC"] = t
             return d
-        except:
+        except Exception:
             return None
 
     data = []
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        for f in tqdm(as_completed([ex.submit(fetch, t) for t in tickers]),
-                      total=len(tickers), desc="Downloading"):
+        for f in tqdm(
+            as_completed([ex.submit(fetch, t) for t in tickers]),
+            total=len(tickers),
+            desc="Downloading",
+        ):
             r = f.result()
             if r is not None:
                 data.append(r)
@@ -124,13 +132,12 @@ def calculate_price_features_polars(
     df: pd.DataFrame,
     bench: pd.DataFrame,
     price_col: str = "Adj Close",
-    
 ) -> pl.DataFrame:
     """
-    Fully vectorized Polars feature engine:
-    - no lookahead bias
-    - stable APIs (no rolling_apply)
-    - production-safe for large backtests
+    Fully vectorized Polars feature engine.
+    Computes returns, volatility, drawdown, risk metrics, MAs, RSI,
+    benchmark-relative features, rolling volume, AND slippage inputs
+    (ADV in ₹, DailyVol) needed by SlippageModel.
     """
     cache_path = os.path.join("data", "cached_data", "technicals.parquet")
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
@@ -138,19 +145,16 @@ def calculate_price_features_polars(
     # -----------------------------
     # CONVERT
     # -----------------------------
-    df = pl.from_pandas(df)
+    df    = pl.from_pandas(df)
     bench = pl.from_pandas(bench)
 
     df = df.with_columns([
         pl.col("Date").cast(pl.Date),
-        pl.col(price_col).alias("price")
+        pl.col(price_col).alias("price"),
     ]).sort(["TIC", "Date"])
 
-    bench = bench.with_columns([
-        pl.col("Date").cast(pl.Date)
-    ])
-
-    df = df.join(bench, on="Date", how="left")
+    bench = bench.with_columns([pl.col("Date").cast(pl.Date)])
+    df    = df.join(bench, on="Date", how="left")
 
     # =============================
     # RETURNS
@@ -174,12 +178,12 @@ def calculate_price_features_polars(
             pl.col("ret_1d")
               .rolling_std(w).over("TIC")
               .rolling_std(w).over("TIC")
-              .alias(f"vol_of_vol_{w}d")
+              .alias(f"vol_of_vol_{w}d"),
         ])
 
     df = df.with_columns([
         (pl.col("vol_21d") * np.sqrt(252)).alias("ann_vol"),
-        (pl.col("ret_1d").rolling_mean(252).over("TIC") * 252).alias("ann_ret")
+        (pl.col("ret_1d").rolling_mean(252).over("TIC") * 252).alias("ann_ret"),
     ])
 
     # =============================
@@ -188,24 +192,19 @@ def calculate_price_features_polars(
     df = df.with_columns([
         (1 + pl.col("ret_1d")).cum_prod().over("TIC").alias("cum")
     ])
-
     df = df.with_columns([
         pl.col("cum").cum_max().over("TIC").alias("peak")
     ])
-
     df = df.with_columns([
         (pl.col("cum") / pl.col("peak") - 1).alias("drawdown")
     ])
-
     df = df.with_columns([
         pl.col("drawdown").rolling_min(252).over("TIC").alias("max_dd_252d")
     ])
 
     # =============================
-    # RISK METRICS (FIXED)
+    # RISK METRICS
     # =============================
-
-    # VaR
     df = df.with_columns([
         pl.col("ret_1d")
           .rolling_quantile(window_size=21, quantile=0.05, interpolation="linear")
@@ -213,7 +212,6 @@ def calculate_price_features_polars(
           .alias("var_21d")
     ])
 
-    # CVaR (SAFE VERSION — NO rolling_apply)
     df = df.with_columns([
         pl.col("ret_1d")
           .rolling_mean(21)
@@ -232,13 +230,12 @@ def calculate_price_features_polars(
          pl.col("vol_60d") * np.sqrt(252)).alias("sharpe_60d"),
     ])
 
-    # Sortino (fixed sign handling)
     df = df.with_columns([
         pl.col("ret_1d")
-        .clip(upper_bound=0)
-        .rolling_std(21)
-        .over("TIC")
-        .alias("downside_vol")
+          .clip(upper_bound=0)
+          .rolling_std(21)
+          .over("TIC")
+          .alias("downside_vol")
     ])
 
     df = df.with_columns([
@@ -256,16 +253,16 @@ def calculate_price_features_polars(
     for w in [21, 50, 200]:
         df = df.with_columns([
             pl.col("price").rolling_mean(w).over("TIC").alias(f"sma_{w}"),
-            pl.col("price").ewm_mean(span=w).over("TIC").alias(f"ema_{w}")
+            pl.col("price").ewm_mean(span=w).over("TIC").alias(f"ema_{w}"),
         ])
 
     df = df.with_columns([
         (pl.col("sma_50") > pl.col("sma_200")).cast(pl.Int8).alias("sma_cross"),
-        (pl.col("ema_21") > pl.col("ema_50")).cast(pl.Int8).alias("ema_cross")
+        (pl.col("ema_21") > pl.col("ema_50")).cast(pl.Int8).alias("ema_cross"),
     ])
 
     # =============================
-    # RSI (FIXED)
+    # RSI
     # =============================
     df = df.with_columns([
         pl.col("price").diff().over("TIC").alias("delta")
@@ -301,6 +298,31 @@ def calculate_price_features_polars(
     ])
 
     # =============================
+    # ROLLING VOLUME
+    # =============================
+    df = df.with_columns([
+        pl.col("Volume").rolling_mean(21).over("TIC").alias("volume_21d"),
+        pl.col("Volume").rolling_mean(63).over("TIC").alias("volume_63d"),
+        pl.col("Volume").rolling_mean(126).over("TIC").alias("volume_126d"),
+    ])
+
+    # =============================
+    # SLIPPAGE INPUTS                ← NEW
+    # ADV (₹) = avg daily rupee volume over 20 days
+    # DailyVol = rolling 20-day daily return std dev
+    # These are consumed by SlippageModel.get_factor() in trade.py
+    # =============================
+    df = df.with_columns([
+        (pl.col("Volume") * pl.col("price"))
+          .rolling_mean(20).over("TIC")
+          .alias("ADV"),              # average daily rupee turnover
+
+        pl.col("ret_1d")
+          .rolling_std(20).over("TIC")
+          .alias("DailyVol"),         # 20-day rolling daily σ
+    ])
+
+    # =============================
     # SAVE
     # =============================
     df.write_parquet(cache_path)
@@ -308,62 +330,36 @@ def calculate_price_features_polars(
     return df
 
 
-
-def load_data(start_date: str, end_date: str, update: bool, full_nse_tickers: pd.DataFrame, benchmark: str) -> pd.DataFrame:
+def load_data(
+    start_date: str,
+    end_date: str,
+    update: bool,
+    full_nse_tickers: pd.DataFrame,
+    benchmark: str,
+) -> pd.DataFrame:
     """
-        Load engineered market data for backtesting.
+    Load engineered market data for backtesting.
 
-        This function handles both cached and freshly computed datasets,
-        including feature engineering via Polars and safe time filtering.
+    Returns a time-indexed DataFrame with engineered features filtered
+    between start_date and end_date.
 
-        Parameters
-        ----------
-        start_date : str
-            Start date for backtest window (YYYY-MM-DD).
-        end_date : str
-            End date for backtest window (YYYY-MM-DD).
-        update : bool
-            If True, re-downloads raw market data and recomputes all features.
-            If False, loads precomputed parquet cache from disk.
-        full_nse_tickers : pd.DataFrame
-            DataFrame containing NSE tickers universe used for data download.
-
-        Returns
-        -------
-        pd.DataFrame
-            Time-indexed dataframe containing engineered features filtered
-            between start_date and end_date.
-
-            Index:
-                Date (datetime64[ns])
-            Columns:
-                Price, returns, volatility, risk metrics, technical indicators,
-                and benchmark-relative features (alpha, beta, etc.).
-
-        Notes
-        -----
-        - Uses Polars for feature computation (performance optimized).
-        - Avoids `.loc[start:end]` slicing to prevent datetime monotonic errors.
-        - Ensures all date filtering is done via boolean masks (safe for panel data).
-        - Designed for long-horizon portfolio backtesting.
-
-        Warnings
-        --------
-        - Ensure `Date` column is not manually modified before filtering.
-        - Do not mix string and datetime types in external calls.
+    Now includes:
+      - ADV      : 20-day avg daily ₹ turnover (for volume slippage)
+      - DailyVol : 20-day rolling daily σ      (for volume slippage)
+      - Open     : raw open price               (for open_next / random_open execution)
     """
     cache_path = os.path.join("data", "cached_data", "technicals.parquet")
 
     start_date = pd.to_datetime(start_date)
-    end_date = pd.to_datetime(end_date)
+    end_date   = pd.to_datetime(end_date)
 
     if update:
         nse_universe_price = download_data(full_nse_tickers)
-        benchmark_prices = download_benchmark_data(symbol=benchmark)
+        benchmark_prices   = download_benchmark_data(symbol=benchmark)
 
         technicals = calculate_price_features_polars(
             df=nse_universe_price,
-            bench=benchmark_prices
+            bench=benchmark_prices,
         ).to_pandas()
     else:
         technicals = pd.read_parquet(cache_path)
@@ -381,4 +377,4 @@ def load_data(start_date: str, end_date: str, update: bool, full_nse_tickers: pd
         (technicals["Date"] <= end_date)
     ].dropna()
 
-    return technicals.sort_values(by='Date').set_index("Date")
+    return technicals.sort_values(by="Date").set_index("Date")
