@@ -120,7 +120,6 @@ def download_data(df, refresh_data=False, workers=8) -> pd.DataFrame:
     return final
 
 
-
 def calculate_price_features_polars(
     df: pd.DataFrame,
     bench: pd.DataFrame,
@@ -310,7 +309,7 @@ def calculate_price_features_polars(
 
 
 
-def load_data(start_date: str, end_date: str, update: bool, full_nse_tickers: pd.DataFrame) -> pd.DataFrame:
+def load_data(start_date: str, end_date: str, update: bool, full_nse_tickers: pd.DataFrame, benchmark: str) -> pd.DataFrame:
     """
         Load engineered market data for backtesting.
 
@@ -360,7 +359,7 @@ def load_data(start_date: str, end_date: str, update: bool, full_nse_tickers: pd
 
     if update:
         nse_universe_price = download_data(full_nse_tickers)
-        benchmark_prices = download_benchmark_data(symbol=BENCHMARK)
+        benchmark_prices = download_benchmark_data(symbol=benchmark)
 
         technicals = calculate_price_features_polars(
             df=nse_universe_price,

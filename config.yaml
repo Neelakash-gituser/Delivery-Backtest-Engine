@@ -1,10 +1,10 @@
 id: config1
-start_date: "2020-01-01"
-end_date: "2026-04-03"
+start_date: "2020-01-01" # backtest start date (signals start from this date onwards)
+end_date: "2026-04-03" # backtest end date (signals up to this date are considered)
+benchmark: "^NSEI" # benchmark ticker (used for performance comparison and some metrics)
+update: True # whether to update price data from yfinance (set to False after first run to save time)
 
-benchmark: "^NSEI"
-update: false
-
+# ── strategy parameters ───────────────────────────────
 screen:
   condition1:
     and:
@@ -16,10 +16,11 @@ screen:
   condition2:
     and:
       - ["drawdown", ">", -0.2]
-
+# cash: initial capital for backtest (default: 1 million)
 cash: 1000000
 rebalance_frequency: "monthly"
 
+# ranker weights for combining multiple metrics
 ranker:
   ann_ret:
        0.5
@@ -27,3 +28,16 @@ ranker:
       0.5
   volatility:
     -0.5
+
+# ADD these two blocks to your existing config.yaml
+slippage:
+  mode: "fixed"        # options: none | fixed | volume
+  bps: 10              # used when mode=fixed (10 bps = 0.10%)
+  impact_k: 0.1        # used when mode=volume (market impact constant)
+
+execution:
+  price: "open_next"   # options: close | open_next | random_open
+  # close      → current behaviour (signal price = execution price, no lag)
+  # open_next  → execute at next day's open (realistic for EOD signal)
+  # random_open→ open_next + gaussian noise scaled to overnight volatility
+  open_noise_sigma: 0.003  # only used when price=random_open (0.3% std dev)

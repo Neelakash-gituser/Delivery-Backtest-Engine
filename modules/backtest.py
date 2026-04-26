@@ -34,6 +34,7 @@ def run_backtest(
     portfolio = {}
     trade_blotter = []
     equity_curve = []
+    portfolio_history = []
 
     all_dates = sorted(price_df["Date"].unique())
     rebalance_dates = generate_rebalance_dates(all_dates, rebalance_freq)
@@ -107,6 +108,12 @@ def run_backtest(
                     trade_blotter=trade_blotter
                 )
 
+                # Append new portfolio state to history
+                portfolio_history.append({
+                    "Date": date,
+                    "Portfolio": portfolio.copy()
+                })
+
                 if verbose:
                     print(f"   💼 Trades executed | New cash: {cash:,.2f}")
 
@@ -122,4 +129,4 @@ def run_backtest(
     if verbose:
         print("\n✅ Backtest completed")
 
-    return pd.DataFrame(equity_curve), pd.DataFrame(trade_blotter)
+    return pd.DataFrame(equity_curve), pd.DataFrame(trade_blotter), pd.DataFrame(portfolio_history)
