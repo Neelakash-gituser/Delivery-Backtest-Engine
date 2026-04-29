@@ -1,8 +1,8 @@
 id: config1
-start_date: "2020-01-01" # backtest start date (signals start from this date onwards)
+start_date: "2023-01-01" # backtest start date (signals start from this date onwards)
 end_date: "2026-04-03" # backtest end date (signals up to this date are considered)
 benchmark: "^NSEI" # benchmark ticker (used for performance comparison and some metrics)
-update: True # whether to update price data from yfinance (set to False after first run to save time)
+update: False # whether to update price data from yfinance (set to False after first run to save time)
 
 # ── strategy parameters ───────────────────────────────
 screen:
