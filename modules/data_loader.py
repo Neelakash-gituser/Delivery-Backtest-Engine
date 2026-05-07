@@ -9,6 +9,24 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
 
+def load_sector_info() -> pd.DataFrame:
+    """
+        Load sector information for NSE stocks from local CSV.
+        Returns a DataFrame with columns: Symbol, Company Name, Industry.
+        Strips whitespace from all string fields for consistency.
+    """
+    df = pd.concat(
+        [pd.read_csv(f)[['Symbol', 'Company Name', 'Industry']]
+         for f in glob.glob("data/sector_indices/*.csv")],
+        ignore_index=True
+    )
+
+    df = df.apply(lambda c: c.str.strip() if c.dtype == "object" else c)
+    df['Symbol'] += ".NS"
+
+    return df.drop_duplicates().reset_index(drop=True)
+
+
 def download_benchmark_data(symbol="^NSEI") -> pd.DataFrame:
     """
     Download benchmark index data (no caching).

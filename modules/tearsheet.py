@@ -32,12 +32,13 @@ warnings.filterwarnings("ignore")
 
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 import plotly.figure_factory as ff
 from plotly.subplots import make_subplots
 import plotly.io as pio
 from IPython.display import display
-
+from modules.data_loader import load_sector_info
 
 # ─────────────────────────────────────────────────────────────────────────────
 # THEME
@@ -246,6 +247,7 @@ def _trade_stats_dict(trades):
         "Total P&L (₹)":  pnl.sum(),
     }
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TABLE HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -323,6 +325,7 @@ class Tearsheet:
         portfolio_values: pd.Series,
         benchmark_values: pd.Series = None,
         trades: pd.DataFrame = None,
+        portfolio_history:pd.DataFrame = None,
         config: dict = None,
         risk_free_rate: float = 0.065,
         periods: int = 252,
@@ -333,13 +336,14 @@ class Tearsheet:
         self.config  = config or {}
         self.rf      = risk_free_rate
         self.T       = periods
+        self.port_hist = portfolio_history
+        self.trade_blotter = trades
 
         self._pr     = _rets(self.pv)
         self._br     = _rets(self.bv) if self.bv is not None else None
         self._cache  = None
 
     # ── RAW METRICS ───────────────────────────────────────────────────────────
-
     def metrics(self) -> dict:
         """Return flat dict of all raw metric values."""
         if self._cache:
@@ -440,6 +444,47 @@ class Tearsheet:
         return tables
 
     # ── CHARTS ────────────────────────────────────────────────────────────────
+    def sector_cluster_chart(self, freq="Q"):
+        """
+        Clustered sector exposure heatmap (Yearly or Quarterly).
+
+        freq:
+            "Y" -> Yearly
+            "Q" -> Quarterly
+        """
+        df = self.sector_exposure_analysis().copy()
+        df["Date"] = pd.to_datetime(df["Date"])
+
+        # bucket time
+        if freq == "Y":
+            df["Period"] = df["Date"].dt.year
+        else:
+            df["Period"] = df["Date"].dt.to_period("Q").astype(str)
+
+        pivot = df.pivot_table(
+            index="Sector",
+            columns="Period",
+            values="%_Exposure",
+            aggfunc="mean"
+        ).fillna(0)
+
+        fig = px.imshow(
+            pivot,
+            color_continuous_scale="Greens",
+            text_auto=".1%",
+            aspect="auto"
+        )
+
+        fig.update_layout(
+            title=f"Sector Exposure Clustered ({'Yearly' if freq=='Y' else 'Quarterly'})",
+            font=dict(
+                family="Menlo, Courier New, monospace",
+                size=12
+            ),
+            height=600
+        )
+
+        return fig
 
     def plot_returns(self) -> go.Figure:
         """Cumulative returns chart: portfolio vs benchmark (in bps)."""
@@ -704,6 +749,55 @@ class Tearsheet:
             font=dict(family=FONT),
         )
         return fig
+    
+    def sector_exposure_analysis(self):
+        """
+        Compute sector-wise portfolio exposure over time.
+
+        Args:
+            portfolio_history (pd.DataFrame):
+                Columns: Date, Portfolio (dict of {ticker: quantity})
+
+            trade_blotter (pd.DataFrame):
+                Columns: Date, TIC, Price
+
+        Returns:
+            pd.DataFrame:
+                Columns: Date, Sector, %_Exposure
+                Normalized sector exposure per date.
+        """
+
+        sector_map = (
+            load_sector_info()
+            .drop_duplicates("Symbol")
+            .set_index("Symbol")["Industry"]
+            .to_dict()
+        )
+
+        records = []
+        for dt, pf in self.port_hist.set_index("Date")["Portfolio"].items():
+            price_map = (
+                self.trade_blotter.loc[self.trade_blotter["Date"].eq(dt), ["TIC", "Price"]]
+                .set_index("TIC")["Price"]
+                .to_dict()
+            )
+
+            total = 0
+            temp = []
+            for tic, qty in pf.items():
+                exp = price_map.get(tic, np.nan) * qty
+                sec = sector_map.get(tic, "Unknown")
+                temp.append((sec, exp))
+                total += exp
+
+            records.extend([
+                (dt, sec, exp / total if total else np.nan)
+                for sec, exp in temp
+            ])
+
+        df = pd.DataFrame(records, columns=["Date", "Sector", "%_Exposure"])
+
+        return df.groupby(["Date", "Sector"], as_index=False).sum()
 
     def plot_all(self):
         """Render all charts and tables inline (Jupyter / VSCode Jupyter)."""
@@ -734,3 +828,4 @@ class Tearsheet:
         self.plot_distribution().show()
         self.plot_monthly().show()
         self.plot_top_drawdowns().show()
+        self.sector_cluster_chart().show()
